@@ -1,0 +1,415 @@
+---
+title: "Demand Forecasting for a Fast-Food Restaurant Chain"
+author: "Konstantinos Paganopoulos"
+subtitle: Logistics and Supply Chain Analytics - Individual Project
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+### Solutions
+
+We first load the necessary libraries.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE)
+library(forecast)
+library(tseries)
+library(ggplot2)
+```
+
+We have a dataset, which includes daily sales for lettuce at a store in California from a fast-food restaurant chain from 13 March 2015 to 15 June 2015. Each observation includes two values: day pair, and sales in that particular day.
+
+Then, we load and split the data set into train and test set.
+
+```{r}
+# read csv file
+data <- read.csv(file = "California2_final.csv", header = TRUE, stringsAsFactors = FALSE)
+
+# convert column date of data set to type date
+data$date <- as.Date(data$date)
+
+# convert sales into a time series object
+lettuce <- ts(data[, 2], frequency = 7, start = c(11, 2)) # 11th week 2nd day
+
+# split data set into train and test set
+lettuce_train <- subset(lettuce, end = 81)
+lettuce_test <- subset(lettuce, start = 82) # last 14 lines-days 
+```
+
+### ARIMA
+
+We visually inspect the time series.
+
+```{r}
+autoplot(lettuce_train, xlab = "Weeks", ylab = "Lettuce") + theme_minimal() + 
+ggtitle("California 2 Store (4904) - Time series plot")
+```
+```{r}
+ggtsdisplay(lettuce_train, xlab = "weeks", theme = theme_minimal())
+```
+
+Due to the seasonality in time series, it is non-stationary. We can get rid of seasonality by taking first-order difference. We plot the time series after the difference, and observe that there is no seasonality and appears to be stationary. We run ADF, PP and KPSS tests to formally test the stationarity of time series after the first-order difference, and all suggest that the time series is stationary.
+
+```{r}
+# stationary test
+adf.test(lettuce_train)
+```
+
+```{r}
+pp.test(lettuce_train)
+```
+
+```{r}
+kpss.test(lettuce_train)
+```
+
+The two automatic functions, ndiffs() and nsdiffs() tell us how many first-order differences, and how many seasonal differences, respectively, we need to take to make the time series stationary. We use those functions below:
+
+```{r}
+ndiffs(lettuce_train)
+```
+```{r}
+# seasonal stationarity
+nsdiffs(lettuce_train)
+```
+
+We need to differentiate for seasonality one time.
+
+```{r}
+### stationarize time series
+# take first order difference
+lettuce_train.diff1 <- diff(lettuce_train, differences = 1, lag=7)
+```
+
+Check again the tests for stationarity:
+
+```{r}
+# stationary test
+adf.test(lettuce_train.diff1)
+```
+```{r}
+pp.test(lettuce_train.diff1)
+```
+```{r}
+kpss.test(lettuce_train.diff1)
+```
+
+Check again the two automatic functions for stationarity:
+
+```{r}
+ndiffs(lettuce_train.diff1)
+```
+
+```{r}
+nsdiffs(lettuce_train.diff1)
+```
+
+We now visually inspect the differentiated time series.
+
+```{r}
+autoplot(lettuce_train.diff1, xlab = "Weeks", ylab = "Lettuce") + theme_minimal() + 
+ggtitle("California 2 Store (4904) - Time series plot (Differentiated)")
+```
+```{r}
+ggtsdisplay(lettuce_train.diff1, xlab = "weeks", theme = theme_minimal())
+```
+
+Looks stationary.
+
+Once we have a stationary time series, the next step is to determine the optimal orders of MA and AR components. We first plot the ACF and PACF of the time series.
+
+```{r}
+# acf plot
+ggAcf(lettuce_train.diff1) + theme_minimal() + ggtitle("California 2 Store (4904) - ACF plot")
+```
+```{r}
+# pacf plot
+ggPacf(lettuce_train.diff1) + theme_minimal() + ggtitle("California 2 Store (4904) - PACF plot")
+```
+
+Next we use $auto.arima()$ to search for the best ARIMA models. 
+
+The default procedure uses some approximations to speed up the search. These approximations can be avoided with the argument approximation = FALSE. It is possible that the minimum AIC model will not be found due to these approximations, or because of the stepwise procedure. A much larger set of models will be searched if the argument stepwise = FALSE is used. We also use d = 0 and D = 1 since we had no first-differencing but only seasonal-differencing.
+
+```{r}
+auto.arima(lettuce_train, trace = TRUE, ic = 'aic', approximation = FALSE, stepwise = FALSE, d=0, D=1) 
+# Best model: ARIMA(0,0,4)(0,1,1)[7]  (AIC=800.18)
+# Second best:  ARIMA(0,0,2)(0,1,1)[7]  (AIC=800.43)
+# Third best: ARIMA(0,0,3)(0,1,1)[7] (AIC=801.98)
+```
+
+Based on the output of $auto.arima()$, a couple of models have similar AICs. Now suppose that we choose the three models with the lowest AICs, namely ARIMA(0,0,4)(0,1,1)[7] with AIC=800.18, ARIMA(0,0,2)(0,1,1)[7]  with AIC=800.43 AND ARIMA(0,0,3)(0,1,1)[7] with AIC=801.98, as the candidate models that we would like to evaluate further.
+
+```{r}
+# three candidate models
+lettuce.m1 <- Arima(lettuce_train, order = c(0, 0, 4), 
+                       seasonal = list(order = c(0, 1, 1), period = 7))
+lettuce.m2 <- Arima(lettuce_train, order = c(0, 0, 2), 
+                       seasonal = list(order = c(0, 1, 1), period = 7))
+lettuce.m3 <- Arima(lettuce_train, order = c(0, 0, 3), 
+                       seasonal = list(order = c(0, 1, 1), period = 7))
+```
+
+Now we evaluate the in-sample performance/fit of the model with $accuracy()$ function, which summarizes various measures of fitting errors. 
+
+A couple of functions are proved to be useful for us to evaluate the in-sample performance/fit of the model. One is accuracy() function, which summarizes various measures of fitting errors. In the post-estimation analysis, we would also like to check out the residual plots, including time series, ACFs and etc, to make sure that there is no warning signal. In particular, residuals shall have a zero mean, constant variance, and distributed symmetrically around mean zero. ACF of any lag greater 0 is expected to be statistically insignificant.
+
+```{r}
+# in-sample one-step forecasts model 1
+accuracy(lettuce.m1)
+```
+```{r}
+# in-sample one-step forecasts model 2
+accuracy(lettuce.m2)
+```
+
+```{r}
+# in-sample one-step forecasts model 3
+accuracy(lettuce.m3)
+```
+
+The first model even though it has both the lowest AIC score as well as the lowest RMSE.
+
+Now we proceed with the residual analysis of the three models.
+
+```{r}
+# residual analysis model 1
+autoplot(lettuce.m1$residuals, xlab = "Weeks", ylab = "Lettuce") + theme_minimal() + 
+ggtitle("California 2 Store (4904) - Residuals model 1 plot")
+```
+```{r}
+ggAcf(lettuce.m1$residuals) + theme_minimal() + 
+ggtitle("California 2 Store (4904) - ACF residualts plot model 1")
+```
+```{r}
+checkresiduals(lettuce.m1, xlab = "weeks", theme = theme_minimal())
+```
+```{r}
+# residual analysis model 2
+autoplot(lettuce.m2$residuals, xlab = "Weeks", ylab = "Lettuce") + theme_minimal() + 
+ggtitle("California 2 Store (4904) - Residuals model 2 plot")
+```
+```{r}
+ggAcf(lettuce.m2$residuals) + theme_minimal() + 
+ggtitle("California 2 Store (4904) - ACF residualts plot model 2")
+```
+```{r}
+checkresiduals(lettuce.m2, xlab = "weeks", theme = theme_minimal())
+```
+
+```{r}
+# residual analysis model 3
+autoplot(lettuce.m3$residuals, xlab = "Weeks", ylab = "Lettuce") + theme_minimal() + 
+ggtitle("California 2 Store (4904) - Residuals model 3 plot")
+```
+
+```{r}
+ggAcf(lettuce.m3$residuals) + theme_minimal() + 
+ggtitle("California 2 Store (4904) - ACF residualts plot model 3")
+```
+
+```{r}
+checkresiduals(lettuce.m3, xlab = "weeks", theme = theme_minimal())
+```
+
+Now we continue with the forecasting part for the three candidate models:
+
+```{r}
+#Forecasting part model 1
+lettuce.f1 <- forecast(lettuce.m1, h = 14)
+autoplot(lettuce.f1, xlab = "Weeks", ylab = "Lettuce") + theme_minimal()
+```
+
+```{r}
+#Forecasting part model 2
+lettuce.f2 <- forecast(lettuce.m2, h = 14)
+autoplot(lettuce.f2, xlab = "Weeks", ylab = "Lettuce") + theme_minimal()
+```
+
+```{r}
+#Forecasting part model 3
+lettuce.f3 <- forecast(lettuce.m3, h = 14)
+autoplot(lettuce.f3, xlab = "Weeks", ylab = "Lettuce") + theme_minimal()
+```
+
+Now we need to test how our models performs for test set. Earlier observations are used for training, and more recent observations are used for testing. Suppose we use the first 81 days of data for training and the last 14 for test. Based on auto.arima(), we choose two candidate models with the lowest AICs.
+
+```{r}
+### model evaluation
+# Apply fitted model to later data
+# Accuracy test for candidate model 1
+accuracy.m1 <- accuracy(forecast(lettuce.m1, h = 14), lettuce_test)
+accuracy.m1
+```
+```{r}
+# Accuracy test for candidate model 2
+accuracy.m2 <- accuracy(forecast(lettuce.m2, h = 14), lettuce_test)
+accuracy.m2
+```
+```{r}
+# Accuracy test for candidate model 3
+accuracy.m3 <- accuracy(forecast(lettuce.m3, h = 14), lettuce_test)
+accuracy.m3
+```
+
+Thus we pick the second model, since it performs better on the test set.
+
+Now we train the second model on the whole date set as follows:
+
+```{r}
+# Training on both train and test set
+lettuce.f.both <- Arima(lettuce, order = c(0, 0, 2), 
+                    seasonal = list(order = c(0, 1, 1), period = 7))
+```
+
+Lastly, we forecast lettuce demand for the next 2 weeks.
+
+```{r}
+# Forecast for next 14 days
+lettuce.f.final <- forecast(lettuce.f.both, h = 14)
+lettuce.f.final
+```
+
+We present our forecast through ARIMA(0,0,2)(0,1,1) model for each of the next 14 days.
+
+```{r}
+forecast_data <- as.data.frame(lettuce.f.final)
+next2weeks <- data.frame(day = seq(1, 14))
+final_forecast_California1_arima <- cbind(next2weeks, forecast_data$`Point Forecast`)
+final_forecast_California1_arima
+```
+
+### Holt-Winters 
+
+Now we will use another model to forecast lettuce demand. Our goal is to pick the model with the most accurate predictions.
+
+We will forecast the lettuce demand for next two weeks using Holt-Winters model.
+
+For time series analysis, the first step is always to visually inspect the time series. In this regard, the stl() function is quite useful. It decomposes the original time series into trend, seasonal factors, and random error terms. The relative importance of different components are indicated by the grey bars in the plots.
+
+```{r}
+lettuce_train %>% stl(s.window = "period") %>%
+autoplot(xlab = "Weeks", ylab = "Lettuce") + theme_minimal() + 
+ggtitle("California 1 Store (46673) - Range bar plot")
+```
+
+For this data set, the grey bar of the trend panel is significantly larger than that on the orginal time series panel, which indicates that the contribution of the trend component to the variation in the original time series is marginal.
+
+The grey bar of the seasonal panel is also large, and larger than the grey bar of random error term, which indicates that the contribution of seasonal factors to the variation in the original time series is marginal. In other words, it indicates that there is small seasonality in the data.
+
+With ets(), initial states and smoothing parameters are jointly estimated by maximizing the likelihood function. We need to specify the model in ets() using three letters. The way to approach this is: (1) check out time series plot, and see if there is any trend and seasonality; (2) run ets() with model = “ZZZ”, and see whether the best model is consistent with your expectation; (3) if they are consistent, it gives us confidence that our model specification is correct; otherwise try to figure out why there is a discrepancy.
+
+We now use ets function as previously indicated to find our best model:
+
+```{r}
+# using ets
+lettuce.ets2 <- ets(lettuce_train, model = "ZZZ")
+lettuce.ets2
+```
+
+Our best model is the ETS(A,N,A).
+
+```{r}
+# using ets
+lettuce.ets <- ets(lettuce_train, model = "ANA", ic = 'aic')
+lettuce.ets
+```
+
+After estimation, we can use accuracy() function to determine in-sample fit and forecast() function to generate forecast. 
+
+Similarly with ARIMA model, we use AIC to determine our best model in terms of best in-sample performance.
+
+```{r}
+# in-sample one-step forecast
+accuracy(lettuce.ets)
+```
+
+We present the in-sample forecast part for the ets model as follows:
+
+```{r}
+# best model
+lettuce.ets.f <- forecast(lettuce.ets, h = 14)
+lettuce.ets.f
+```
+
+After the forecast, we continue with the in and out of sample accuracy of the two ets models.
+
+```{r}
+# Out of sample accuracy
+# best model
+accuracy.ets <- accuracy(lettuce.ets.f, lettuce_test)
+accuracy.ets
+```
+
+We now train our best model - ETS(A,N,A) on the whole data set as indicated below:
+
+```{r}
+# final model
+lettuce.ets <- ets(lettuce, model = "ANA", ic = 'aic')
+lettuce.ets
+```
+
+We now present the out-of-sample forecast for the next 14 days (2 weeks) as seen below:
+
+```{r}
+lettuce.ets.f <- forecast(lettuce.ets, h = 14)
+lettuce.ets.f
+```
+
+We present our forecast for each of the next 14 days.
+
+```{r}
+forecast_data <- as.data.frame(lettuce.ets.f)
+next2weeks <- data.frame(day = seq(1, 14))
+final_forecast_California2_ets <- cbind(next2weeks, forecast_data$`Point Forecast`)
+final_forecast_California2_ets
+```
+
+### Comparison
+
+Now we will compare the two best models for California 2 Store (4904).
+
+We plot time series data for train and test set and also the forecasts from our two models as indicated below:
+
+```{r}
+colours <- c("blue", "deepskyblue4", "black")
+autoplot(lettuce.f.final, xlab = "Weeks", ylab = "Lettuce") + 
+  autolayer(lettuce_train, series = "Train set") +
+  autolayer(lettuce_test, series = "Test set") +
+  autolayer(lettuce.f.final, series = "14 day Forecast") +
+  guides(colour = guide_legend(title = "Time Series Data")) +
+  scale_colour_manual(values = colours) + theme_minimal()
+```
+```{r}
+autoplot(lettuce.ets.f, xlab = "Weeks", ylab = "Lettuce") + 
+  autolayer(lettuce_train, series = "Train set") +
+  autolayer(lettuce_test, series = "Test set") +
+  autolayer(lettuce.ets.f, series = "14 day Forecast") +
+  guides(colour = guide_legend(title = "Time Series Data")) +
+  scale_colour_manual(values = colours) + theme_minimal()
+```
+
+In order to decide which of the two models ARIMA(0,0,2)(0,1,1) or ETS(A,N,A) to choose, we will check their RMSE in the test set.
+
+```{r}
+# best ets model
+# ETS(A,N,A) 
+accuracy.ets
+```
+```{r}
+# best arima model
+# ARIMA(0,0,2)(0,1,1)
+accuracy.m1
+```
+
+We can observe that ETS(A,N,A) has a better (lower) RMSE (37.75467 vs 41.64471) respectively.
+
+Therefore, we choose the ETS(A,N,A) for California2 (4904) store.
+
+Hence, our forecast for lettuce demand of next 2 weeks for that store is the following:
+
+```{r}
+final_forecast_California2_ets
+```
