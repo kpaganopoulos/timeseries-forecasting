@@ -4,7 +4,7 @@ Individual Project:
 Demand Forecasting for A Fast-Food Restaurant Chain
 Deadline: 10am, March 10, 2020
 
-1 Overview
+1) Overview:
 
 The dataset is provided by one of the largest fast-food restaurant chains in the US. It includes (1)
 transaction information such as menu items that were purchased and quantities of each item; (2)
@@ -32,7 +32,7 @@ justification to support your arguments;
 (Your results will be compared against the real sales over the two-week period based on mean
 squared deviation)
 
-2 Data Description
+2) Data Description:
 
 Table 1: pos_ordersale
 Column Name Data Type Notes
